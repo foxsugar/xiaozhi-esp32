@@ -97,6 +97,28 @@ void Protocol::SendMcpMessage(const std::string& payload) {
     SendText(message);
 }
 
+void Protocol::SendUserText(const std::string& text) {
+    // JSON 转义用户输入
+    std::string escaped;
+    escaped.reserve(text.size() + 8);
+    for (char c : text) {
+        switch (c) {
+            case '"':  escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\b': escaped += "\\b"; break;
+            case '\f': escaped += "\\f"; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default:   escaped.push_back(c);
+        }
+    }
+    std::string message = "{\"session_id\":\"" + session_id_ +
+                          "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" + escaped + "\"}";
+    ESP_LOGI(TAG, "SendUserText: %s", text.c_str());
+    SendText(message);
+}
+
 bool Protocol::IsTimeout() const {
     const int kTimeoutSeconds = 120;
     auto now = std::chrono::steady_clock::now();

@@ -3,6 +3,15 @@ set(SOURCES "audio/audio_codec.cc"
             "audio/audio_debugger.cc"
             "audio/audio_service.cc"
             "audio/demuxer/ogg_demuxer.cc"
+            "pet/pet_animation.cc"
+            "pet/pet_display.cc"
+            "pet/assets/pet_idle.c"
+            "pet/assets/pet_blink.c"
+            "pet/assets/pet_happy.c"
+            "pet/assets/pet_sad.c"
+            "pet/assets/pet_eat.c"
+            "pet/assets/pet_think.c"
+            "serial_console.cc"
             "notify/notify_player.cc"
             "audio/codecs/no_audio_codec.cc"
             "audio/codecs/box_audio_codec.cc"
@@ -43,7 +52,7 @@ set(SOURCES "audio/audio_codec.cc"
             "main.cc"
             )
 
-set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/demuxer" "protocols")
+set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/demuxer" "protocols" "pet")
 
 # Add board common files
 list(APPEND SOURCES
@@ -640,6 +649,11 @@ elseif(CONFIG_BOARD_TYPE_ATK_DNESP32S3M_WIFI)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_32)
 elseif(CONFIG_BOARD_TYPE_ATK_DNESP32S3M_4G)
     set(BOARD_DIR "alientek/atk-dnesp32s3m-4g")
+    set(BUILTIN_TEXT_FONT font_noto_sans_basic_16_4)
+    set(BUILTIN_ICON_FONT font_material_symbols_16_4)
+    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_32)
+elseif(CONFIG_BOARD_TYPE_PET_S3)
+set(BOARD_DIR "pet/pet-s3")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_16_4)
     set(BUILTIN_ICON_FONT font_material_symbols_16_4)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_32)

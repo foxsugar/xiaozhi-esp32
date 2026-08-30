@@ -200,7 +200,8 @@ void WifiBoard::EnterWifiConfigMode() {
     auto state = app.GetDeviceState();
 
     if (state == kDeviceStateSpeaking || state == kDeviceStateNotifying ||
-        state == kDeviceStateListening || state == kDeviceStateIdle) {
+        state == kDeviceStateListening || state == kDeviceStateIdle ||
+        state == kDeviceStateActivating) {
         // Reset protocol (close audio channel, reset protocol)
         Application::GetInstance().ResetProtocol();
 
@@ -236,6 +237,26 @@ void WifiBoard::EnterWifiConfigMode() {
 
 bool WifiBoard::IsInWifiConfigMode() const {
     return WifiManager::GetInstance().IsConfigMode();
+}
+
+void WifiBoard::ConnectToWifi(const std::string& ssid, const std::string& password) {
+    if (ssid.empty()) {
+        ESP_LOGE(TAG, "ConnectToWifi: empty SSID, ignore");
+        return;
+    }
+    // 若仍在配网 AP 模式，先退出
+    if (WifiManager::GetInstance().IsConfigMode()) {
+        WifiManager::GetInstance().StopConfigAp();
+    }
+    // 取消连接超时定时器（避免又把刚保存的凭据踢进配网）
+    esp_timer_stop(connect_timer_);
+
+    // 保存凭据到 NVS（重启后也能自动重连）
+    SsidManager::GetInstance().AddSsid(ssid, password);
+
+    // 立即发起连接
+    ESP_LOGI(TAG, "ConnectToWifi: saving and connecting to %s", ssid.c_str());
+    WifiManager::GetInstance().StartStation();
 }
 
 NetworkInterface* WifiBoard::GetNetwork() {

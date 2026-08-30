@@ -1,0 +1,24 @@
+{
+    "manufacturer": "pet",
+    "name": "pet-s3",
+    "type": "pet-s3",
+    "target": "esp32s3",
+    "build": {
+        "openocd": {
+            "suppress": true
+        }
+    },
+    "flash": {
+        "size": "4MB"
+    },
+    "builds": [
+        {
+            "name": "pet-s3",
+            "sdkconfig_append": [
+                "CONFIG_SPIRAM=y",
+                "CONFIG_SPIRAM_USE=y",
+                "CONFIG_SPIRAM_USE_CAPS_ALLOC=y"
+            ]
+        }
+    ]
+}

@@ -64,6 +64,14 @@ public:
      * Check if in WiFi config mode
      */
     bool IsInWifiConfigMode() const;
+
+    /**
+     * 直接保存 WiFi 凭据并立即发起连接（绕过网页配网）。
+     * 用于串口/命令行等没有配网网页的场景。
+     * @param ssid WiFi 名称
+     * @param password WiFi 密码
+     */
+    void ConnectToWifi(const std::string& ssid, const std::string& password);
 };
 
 #endif // WIFI_BOARD_H

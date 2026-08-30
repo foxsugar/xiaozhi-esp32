@@ -156,6 +156,11 @@ choice BOARD_TYPE
     config BOARD_TYPE_ATK_DNESP32S3M_WIFI
         bool "Alientek ATK-DNESP32S3M Wi-Fi (正点原子)"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_PET_S3
+        bool "XiaoZhi Pet S3 (ST7735S 1.8\" 屏, 无音频)"
+        depends on IDF_TARGET_ESP32S3
+        select LCD_ST7735_128X160
+        imply BUILTIN_EMOJI_COLLECTION
     config BOARD_TYPE_BREAD_COMPACT_ESP32
         bool "Bread Compact ESP32 DevKit (面包板)"
         depends on IDF_TARGET_ESP32

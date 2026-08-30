@@ -6,6 +6,7 @@
 #include "display.h"
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
+#include "serial_console.h"
 #include "settings.h"
 #include "system_info.h"
 #include "text_glyph_payload.h"
@@ -168,6 +169,12 @@ void Application::Initialize() {
 
     // Update the status bar immediately to show the network state
     display->UpdateStatusBar(true);
+
+    // 启动串口打字会话（无麦克风时可用串口输入文字对话）
+    if (serial_console_ == nullptr) {
+        serial_console_ = std::make_unique<SerialConsole>();
+        serial_console_->Start();
+    }
 }
 
 void Application::Run() {
@@ -260,6 +267,7 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_SCHEDULE) {
+            ESP_LOGI(TAG, "Run: handling SCHEDULE events");
             std::unique_lock<std::mutex> lock(mutex_);
             auto tasks = std::move(main_tasks_);
             lock.unlock();
@@ -344,6 +352,15 @@ void Application::HandleActivationDoneEvent() {
     ota_.reset();
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+
+    // 激活完成前用户可能已输入消息，这里自动补发
+    if (!pending_text_input_.empty()) {
+        std::string pending = pending_text_input_;
+        pending_text_input_.clear();
+        ESP_LOGI(TAG, "Activation done, resending cached input: %s", pending.c_str());
+        SerialConsole::Print("[提示] 初始化完成，自动发送：" + pending);
+        SendTextInput(pending);
+    }
 
     Schedule([this]() {
         // Play the success sound to indicate the device is ready
@@ -572,6 +589,7 @@ void Application::InitializeProtocol() {
             ESP_LOGW(TAG, "Incoming JSON message has no type");
             return;
         }
+        ESP_LOGI(TAG, "OnIncomingJson: type=%s", type->valuestring);
         if (strcmp(type->valuestring, "notify") == 0) {
             auto audio_url = cJSON_GetObjectItem(root, "audio_url");
             if (!cJSON_IsString(audio_url) || audio_url->valuestring[0] == '\0') {
@@ -1305,6 +1323,39 @@ void Application::SendMcpMessage(const std::string& payload) {
         if (mcp_broadcast_callback_) {
             mcp_broadcast_callback_(payload);
         }
+    });
+}
+
+void Application::SendTextInput(const std::string& text) {
+    if (text.empty()) {
+        return;
+    }
+    // 必须在主任务中执行，确保音频通道状态与协议调用线程安全
+    ESP_LOGI(TAG, "SendTextInput: scheduling, text=%s", text.c_str());
+    Schedule([this, text]() {
+        ESP_LOGI(TAG, "SendTextInput: lambda running, protocol_=%p", (void*)protocol_.get());
+        if (!protocol_) {
+            // 激活流程还没完成（InitializeProtocol 未调用），缓存消息待激活后自动重发
+            ESP_LOGW(TAG, "SendTextInput: protocol not ready, cache for later");
+            pending_text_input_ = text;
+            SerialConsole::Print("[提示] 正在初始化，请稍候。激活完成后自动发送：" + text);
+            return;
+        }
+        // 若音频通道未打开，先打开（与唤醒词路径等价，约阻塞 1s，可接受）
+        if (!protocol_->IsAudioChannelOpened()) {
+            ESP_LOGI(TAG, "SendTextInput: opening audio channel");
+            SerialConsole::Print("[提示] 正在建立连接...");
+            if (!protocol_->OpenAudioChannel()) {
+                ESP_LOGE(TAG, "SendTextInput: OpenAudioChannel failed");
+                SerialConsole::Print("[提示] 音频通道打开失败，请检查网络后重试。");
+                return;
+            }
+            ESP_LOGI(TAG, "SendTextInput: audio channel opened OK");
+        }
+        // 以 ASR 识别结果形式发送，触发正常 LLM 对话流程
+        protocol_->SendUserText(text);
+        ESP_LOGI(TAG, "SendTextInput: SendUserText done for '%s'", text.c_str());
+        SerialConsole::Print("[提示] 已发送给 AI: " + text);
     });
 }
 

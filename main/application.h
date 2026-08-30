@@ -18,6 +18,8 @@
 #include "ota.h"
 #include "audio_service.h"
 #include "device_state.h"
+
+class SerialConsole;  // 前向声明，避免 application.h 引入 serial_console.h 全量定义
 #include "device_state_machine.h"
 #include "notify/notify_player.h"
 
@@ -114,6 +116,12 @@ public:
     bool CanEnterSleepMode();
     void SendMcpMessage(const std::string& payload);
     void RegisterMcpBroadcastCallback(std::function<void(const std::string&)> callback);
+
+    /**
+     * 串口/文本输入会话：把一行用户输入作为 ASR 识别结果发给服务端，
+     * 用于无麦克风场景（替代语音）。会自动建立音频通道。
+     */
+    void SendTextInput(const std::string& text);
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
@@ -145,6 +153,11 @@ private:
     std::unique_ptr<Ota> ota_;
 
     std::function<void(const std::string&)> mcp_broadcast_callback_;
+
+    std::unique_ptr<SerialConsole> serial_console_;  // 串口打字会话（无麦克风输入）
+
+    // 激活完成前用户已输入的消息，激活后自动重发
+    std::string pending_text_input_;
 
     bool has_server_time_ = false;
     bool aborted_ = false;

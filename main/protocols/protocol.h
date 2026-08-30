@@ -67,6 +67,9 @@ public:
     virtual void SendAbortSpeaking(AbortReason reason);
     virtual void SendMcpMessage(const std::string& message);
 
+    // 把用户输入文本作为 ASR 识别结果发给服务端（用于无麦克风/串口输入场景）。
+    void SendUserText(const std::string& text);
+
 protected:
     std::function<void(const cJSON* root)> on_incoming_json_;
     std::function<void(std::unique_ptr<AudioStreamPacket> packet)> on_incoming_audio_;

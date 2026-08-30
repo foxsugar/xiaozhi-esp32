@@ -3,6 +3,7 @@
 import sys
 import os
 import json
+import shutil
 import zipfile
 import argparse
 import re
@@ -56,6 +57,11 @@ def get_project_version() -> Optional[str]:
 
 def _run_idf(*args: str, preview: bool = False) -> None:
     command = ["idf.py"]
+    # On Windows, EIM exposes idf.py as a PowerShell function rather than an
+    # executable, so subprocess cannot resolve it. Use the real script path.
+    idf_path = os.environ.get("IDF_PATH")
+    if idf_path and os.path.isfile(os.path.join(idf_path, "tools", "idf.py")):
+        command = [sys.executable, os.path.join(idf_path, "tools", "idf.py")]
     if preview:
         command.append("--preview")
     command.extend(args)
