@@ -1,7 +1,8 @@
 #include "wifi_board.h"
 #include "pet_display.h"
-#include "codecs/no_audio_codec.h"
+#include "codecs/es8311_audio_codec.h"
 #include "display/lcd_display.h"
+#include "led/single_led.h"
 #include "application.h"
 #include "config.h"
 #include "mcp_server.h"
@@ -9,8 +10,10 @@
 #include "ssid_manager.h"
 
 #include <esp_lcd_panel_vendor.h>
+#include <esp_lcd_ili9341.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
+#include <driver/i2c_master.h>
 #include <driver/spi_master.h>
 #include <driver/gpio.h>
 #include <esp_log.h>
@@ -21,17 +24,74 @@
 namespace {
 const char* TAG = "pet_s3";
 
-// ST7789 2.4" 屏驱，GPIO 来自 config.h，走独立 HSPI(SPI3_HOST)
-Display* InitializeSt7789Display() {
-    ESP_LOGI(TAG, "init ST7789 2.4\" %dx%d on SPI%d", DISPLAY_WIDTH, DISPLAY_HEIGHT,
+// ===== 厂商调校的初始化序列 =====
+// 取自 LCDwiki 官方 Demo：
+//   1-示例程序_Demo/ESP-IDF/2.8inch_ESP32-S3_LVGL/
+//     components/lvgl_esp32_drivers/lvgl_tft/ili9341.c  -> ili9341_init()
+// espressif 通用驱动自带的默认值（Gamma 0xE0/0xE1、VCOM 0xC5/0xC7、
+// 电源 0xC0/0xC1、接口控制 0xF6）是按通用 ILI9341 给的，与这块屏不匹配，
+// 会让画面整体发灰、偏色。这里逐条照抄 Demo 为本屏调校的取值。
+//
+// 以下 5 条驱动已经负责，这里不再重复，避免与后续的 esp_lcd_panel_* 调用打架：
+//   0x11 退出睡眠（驱动 init 开头已发）
+//   0x29 开显示（esp_lcd_panel_disp_on_off）
+//   0x36 MADCTL（由 swap_xy / mirror 按 config.h 合成后下发）
+//   0x3A COLMOD（驱动按 bits_per_pixel=16 发 0x55）
+//   0x21 反色（由 esp_lcd_panel_invert_color(DISPLAY_INVERT_COLOR) 下发）
+namespace {
+const uint8_t kCfgCF[] = {0x00, 0xC1, 0x30};
+const uint8_t kCfgED[] = {0x64, 0x03, 0x12, 0x81};
+const uint8_t kCfgE8[] = {0x85, 0x00, 0x78};
+const uint8_t kCfgCB[] = {0x39, 0x2C, 0x00, 0x34, 0x02};
+const uint8_t kCfgF7[] = {0x20};
+const uint8_t kCfgEA[] = {0x00, 0x00};
+const uint8_t kCfgC0[] = {0x13};  // Power control 1, GVDD
+const uint8_t kCfgC1[] = {0x13};  // Power control 2
+const uint8_t kCfgC5[] = {0x22, 0x35};  // VCOM control 1
+const uint8_t kCfgC7[] = {0xBD};  // VCOM control 2
+const uint8_t kCfgB6[] = {0x0A, 0x82};  // Display function control
+const uint8_t kCfgF6[] = {0x01, 0x30};  // Interface control
+const uint8_t kCfgB1[] = {0x00, 0x1B};  // Frame rate control
+const uint8_t kCfgF2[] = {0x00};  // Enable 3G, disabled
+const uint8_t kCfg26[] = {0x01};  // Gamma set, curve 1
+const uint8_t kCfgE0[] = {0x0F, 0x35, 0x31, 0x0B, 0x0F, 0x06, 0x49, 0xA7,
+                          0x33, 0x07, 0x0F, 0x03, 0x0C, 0x0A, 0x00};  // 正极性 Gamma
+const uint8_t kCfgE1[] = {0x00, 0x0A, 0x0F, 0x04, 0x11, 0x08, 0x36, 0x58,
+                          0x4D, 0x07, 0x10, 0x0C, 0x32, 0x34, 0x0F};  // 负极性 Gamma
+
+// 注意：必须是 static 存储期，驱动在 init 时只是保存指针，不会拷贝内容。
+const ili9341_lcd_init_cmd_t kLcdInitCmds[] = {
+    {0xCF, kCfgCF, sizeof(kCfgCF), 0},
+    {0xED, kCfgED, sizeof(kCfgED), 0},
+    {0xE8, kCfgE8, sizeof(kCfgE8), 0},
+    {0xCB, kCfgCB, sizeof(kCfgCB), 0},
+    {0xF7, kCfgF7, sizeof(kCfgF7), 0},
+    {0xEA, kCfgEA, sizeof(kCfgEA), 0},
+    {0xC0, kCfgC0, sizeof(kCfgC0), 0},
+    {0xC1, kCfgC1, sizeof(kCfgC1), 0},
+    {0xC5, kCfgC5, sizeof(kCfgC5), 0},
+    {0xC7, kCfgC7, sizeof(kCfgC7), 0},
+    {0xB6, kCfgB6, sizeof(kCfgB6), 0},
+    {0xF6, kCfgF6, sizeof(kCfgF6), 0},
+    {0xB1, kCfgB1, sizeof(kCfgB1), 0},
+    {0xF2, kCfgF2, sizeof(kCfgF2), 0},
+    {0x26, kCfg26, sizeof(kCfg26), 0},
+    {0xE0, kCfgE0, sizeof(kCfgE0), 0},
+    {0xE1, kCfgE1, sizeof(kCfgE1), 0},
+};
+constexpr uint16_t kLcdInitCmdsSize = sizeof(kLcdInitCmds) / sizeof(kLcdInitCmds[0]);
+}  // namespace
+
+// ILI9341V 2.8" 屏驱，GPIO 来自 config.h，走 HSPI(SPI3_HOST)
+Display* InitializeIli9341Display() {
+    ESP_LOGI(TAG, "init ILI9341V 2.8\" %dx%d on SPI%d", DISPLAY_WIDTH, DISPLAY_HEIGHT,
              DISPLAY_SPI_HOST + 2);  // SPI2->2, SPI3->3
-    // 背光未接（常亮 3.3V），无需配置 BL GPIO
 
     esp_lcd_panel_io_handle_t panel_io = nullptr;
     esp_lcd_panel_handle_t panel = nullptr;
     spi_bus_config_t buscfg = {
         .mosi_io_num = DISPLAY_MOSI_PIN,
-        .miso_io_num = GPIO_NUM_NC,
+        .miso_io_num = DISPLAY_MISO_PIN,
         .sclk_io_num = DISPLAY_SCLK_PIN,
         .quadwp_io_num = GPIO_NUM_NC,
         .quadhd_io_num = GPIO_NUM_NC,
@@ -39,7 +99,7 @@ Display* InitializeSt7789Display() {
         .data5_io_num = GPIO_NUM_NC,
         .data6_io_num = GPIO_NUM_NC,
         .data7_io_num = GPIO_NUM_NC,
-        // 单笔传输我们按行刷新（每行 320*2=640 字节），这里只给驱动留余量
+        // 单笔传输我们按行刷新（每行 240*2=480 字节），这里只给驱动留余量
         .max_transfer_sz = 16384,
     };
     ESP_ERROR_CHECK(spi_bus_initialize(DISPLAY_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
@@ -54,29 +114,40 @@ Display* InitializeSt7789Display() {
         .user_ctx = nullptr,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
-        // 注：帧缓冲已在 PetDisplay 内部从 PSRAM 拷到内部 SRAM 行缓冲再发起 DMA，
+        // 注：帧缓冲已在 PetDisplay 内部拷到内部 SRAM 行缓冲再发起 DMA，
         // 因此这里不需要 psram_dma_direct（v6.0.2 该标志也不会自动做 cache 写回）。
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)DISPLAY_SPI_HOST, &io_config, &panel_io));
 
+    // 用厂商 Demo 调校过的初始化序列替换驱动自带的通用默认值（详见 kLcdInitCmds 注释）
+    // 注意：esp_lcd_panel_dev_config_t::vendor_config 是 void*，不能传 const 指针
+    static ili9341_vendor_config_t vendor_config = {
+        .init_cmds = kLcdInitCmds,
+        .init_cmds_size = kLcdInitCmdsSize,
+    };
+
     esp_lcd_panel_dev_config_t panel_config = {
         .rgb_ele_order = DISPLAY_RGB_ORDER,
         .bits_per_pixel = 16,
+        // 屏复位与 ESP32-S3 的 EN 共用，无法用 GPIO 单独复位，故为 NC
         .reset_gpio_num = DISPLAY_RESET_PIN,
-        // 注意：esp_lcd_panel_dev_config_t.flags 在本 IDF(v6.0.2) 仅含
-        // reset_active_high，无 psram_trans_buf 字段。整帧 esp_lcd_panel_draw_bitmap
-        // 已可正常工作，花屏由逐行开窗改为整帧一次性刷新规避。
+        .vendor_config = &vendor_config,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(panel_io, &panel_config, &panel));
+    ESP_LOGI(TAG, "ILI9341 driver installed");
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
-    // 与已验证可用的测试项目保持一致：不调用 invert_color / set_gap / swap_xy / mirror，
-    // 直接使用 ST7789 默认的 MADCTL 寻址，避免这些调用改动屏的映射导致显示错位/花屏。
+    // 以下三项由 config.h 控制，便于只改配置即可调整方向与反色：
+    //   · 画面像"底片"（颜色发白/发灰）→ DISPLAY_INVERT_COLOR 改 true
+    //   · 横竖方向不对           → DISPLAY_SWAP_XY 改 true
+    //   · 左右/上下镜像          → DISPLAY_MIRROR_X / Y 改 true
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR));
+    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 
-    if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
-        gpio_set_level(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT ? 0 : 1);
-    }
+    // 背光交给 PwmBacklight（见 PetS3Board::GetBacklight），此处不直接操作 GPIO，
+    // 因为 ledc 未初始化时 gpio_set_level 无效，且会与背光控制冲突。
 
     return new PetDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
                           DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
@@ -160,19 +231,29 @@ void RegisterPetMcpTools() {
 class PetS3Board : public WifiBoard {
 private:
     Display* display_ = nullptr;
-    AudioCodec* audio_codec_ = nullptr;
     Button boot_button_;
+    i2c_master_bus_handle_t i2c_bus_ = nullptr;
 
-    void InitializeDisplay() {
-        display_ = InitializeSt7789Display();
-        RegisterPetMcpTools();
+    // ES8311（音频）与 FT6336G（触摸）共用这组 I2C（SDA=16 / SCL=15）
+    void InitializeI2c() {
+        i2c_master_bus_config_t i2c_bus_cfg = {
+            .i2c_port = AUDIO_CODEC_I2C_NUM,
+            .sda_io_num = AUDIO_CODEC_I2C_SDA_PIN,
+            .scl_io_num = AUDIO_CODEC_I2C_SCL_PIN,
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .glitch_ignore_cnt = 7,
+            .intr_priority = 0,
+            .trans_queue_depth = 0,
+            .flags = {.enable_internal_pullup = 1},
+        };
+        ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
+        ESP_LOGI(TAG, "I2C initialized: SDA=%d SCL=%d", AUDIO_CODEC_I2C_SDA_PIN,
+                 AUDIO_CODEC_I2C_SCL_PIN);
     }
 
-    void InitializeAudioCodec() {
-        audio_codec_ = new NoAudioCodecSimplex(
-            AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_SPK_GPIO_BCLK, AUDIO_I2S_SPK_GPIO_LRCK, AUDIO_I2S_SPK_GPIO_DOUT,
-            AUDIO_I2S_MIC_GPIO_SCK, AUDIO_I2S_MIC_GPIO_WS, AUDIO_I2S_MIC_GPIO_DIN);
+    void InitializeDisplay() {
+        display_ = InitializeIli9341Display();
+        RegisterPetMcpTools();
     }
 
     void InitializeButtons() {
@@ -186,13 +267,33 @@ private:
 public:
     PetS3Board()
         : boot_button_(BOOT_BUTTON_GPIO) {
+        InitializeI2c();  // 最先初始化：ES8311 需要它
         InitializeDisplay();
-        InitializeAudioCodec();
         InitializeButtons();
+        GetBacklight()->SetBrightness(100);
     }
 
     Display* GetDisplay() override { return display_; }
-    AudioCodec* GetAudioCodec() override { return audio_codec_; }
+
+    AudioCodec* GetAudioCodec() override {
+        static Es8311AudioCodec audio_codec(
+            i2c_bus_, AUDIO_CODEC_I2C_NUM, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
+            AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT,
+            AUDIO_I2S_GPIO_DIN, AUDIO_CODEC_PA_PIN, AUDIO_CODEC_ES8311_ADDR,
+            true,                      // use_mclk：板子接了 MCLK(IO4)
+            AUDIO_CODEC_PA_INVERTED);  // 功放为低电平使能
+        return &audio_codec;
+    }
+
+    Backlight* GetBacklight() override {
+        static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
+        return &backlight;
+    }
+
+    Led* GetLed() override {
+        static SingleLed led(BUILTIN_LED_GPIO);
+        return &led;
+    }
 };
 
 DECLARE_BOARD(PetS3Board);

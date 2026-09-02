@@ -9,15 +9,16 @@
         }
     },
     "flash": {
-        "size": "4MB"
+        "size": "16MB"
     },
     "builds": [
         {
             "name": "pet-s3",
             "sdkconfig_append": [
+                "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
                 "CONFIG_SPIRAM=y",
-                "CONFIG_SPIRAM_USE=y",
-                "CONFIG_SPIRAM_USE_CAPS_ALLOC=y"
+                "CONFIG_SPIRAM_MODE_OCT=y",
+                "CONFIG_SPIRAM_USE_MALLOC=y"
             ]
         }
     ]
