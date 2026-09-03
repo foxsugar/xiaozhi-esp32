@@ -5,6 +5,8 @@ set(SOURCES "audio/audio_codec.cc"
             "audio/demuxer/ogg_demuxer.cc"
             "pet/pet_animation.cc"
             "pet/pet_display.cc"
+            "pet/pet_gif_player.cc"
+            "pet/gifdec/gifdec.c"
             "pet/assets/pet_idle.c"
             "pet/assets/pet_blink.c"
             "pet/assets/pet_happy.c"
@@ -1377,4 +1379,10 @@ if ("${size}" AND "${offset}")
     endif()
 else()
     message(STATUS "Assets partition not found, using v1 partition table")
+endif()
+
+# 宠物 GIF 动作：将 main/pet/assets/gif/ 打包为 SPIFFS 镜像并烧录到 assets 分区。
+# 仅 pet-s3 板启用；该板默认不使用 Assets 系统，assets 分区由宠物 GIF 独占。
+if(BOARD_DIR STREQUAL "pet/pet-s3")
+    spiffs_create_partition_image(assets "main/pet/assets/gif")
 endif()

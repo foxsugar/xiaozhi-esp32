@@ -1,6 +1,8 @@
 #include "pet_display.h"
 
 #include "board.h"
+#include "pet_gif_fs.h"
+#include "pet_gif_player.h"
 
 #include <esp_lcd_panel_ops.h>
 #include <esp_err.h>
@@ -88,57 +90,23 @@ PetDisplay::PetDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_
     anim_ = std::make_unique<PetAnimation>(width_, height_);
     anim_->SetFrameSink([this](const uint16_t* buf, int w, int h) { FlushFrame(buf, w, h); });
 
-    // ---- 真实猫图动作 ----
+    // ---- 宠物 GIF 动作 ----
+    // 20 个动作来自 /assets/gif/*.gif（SPIFFS），由 PetGifPlayer 读取并解码注册。
+    // GIF 先注册，按名查找时优先命中 GIF 版。
+    if (PetGifFs::Mount()) {
+        PetGifPlayer::RegisterAll(anim_.get());
+    } else {
+        ESP_LOGE(TAG, "SPIFFS mount failed, no GIF actions available");
+    }
+
+    // ---- 真实猫图动作（仅保留无对应 GIF 的动作）----
     // idle：常态猫图直接贴图，不做呼吸（避免静止时整屏明暗闪烁）
     anim_->RegisterAction({"idle", 1, 1, [](uint16_t* buf, int w, int h, int frame, int total) {
         BlitImage(g_pet_idle, buf, w, h);
     }});
-    // blink：睁眼→闭眼→睁眼，使用真实图片帧
-    anim_->RegisterAction({"blink", 8, 8, [](uint16_t* buf, int w, int h, int frame, int total) {
-        if (frame == 3 || frame == 4) {
-            BlitImage(g_pet_blink, buf, w, h);
-        } else {
-            BlitImage(g_pet_idle, buf, w, h);
-        }
-    }});
-    // happy：真实开心猫图 + 轻微呼吸
-    anim_->RegisterAction({"happy", 24, 10, [](uint16_t* buf, int w, int h, int frame, int total) {
-        float k = 0.90f + 0.10f * sinf(frame * 0.55f);
-        BlitImageBreathing(g_pet_happy, buf, w, h, k);
-    }});
-    // sad：真实难过猫图 + 轻微呼吸
-    anim_->RegisterAction({"sad", 24, 8, [](uint16_t* buf, int w, int h, int frame, int total) {
-        float k = 0.90f + 0.10f * sinf(frame * 0.45f);
-        BlitImageBreathing(g_pet_sad, buf, w, h, k);
-    }});
-    // think：使用真实"思考"猫图，左右轻微晃动
-    anim_->RegisterAction({"think", 10, 8, [](uint16_t* buf, int w, int h, int frame, int total) {
-        constexpr int IW = 240, IH = 320;
-        int dx = (int)(sinf(frame * 0.6f) * 4);
-        for (int y = 0; y < h; y++) {
-            int sy = (y * IH) / h;
-            for (int x = 0; x < w; x++) {
-                int sx = x - dx;
-                uint16_t p = (sx >= 0 && sx < w) ? g_pet_think[sy * IW + ((sx * IW) / w)] : 0x0000;
-                buf[y * w + x] = p;
-            }
-        }
-    }});
-    // eat：使用真实"吃鱼"猫图，配合轻微呼吸
-    anim_->RegisterAction({"eat", 30, 10, [](uint16_t* buf, int w, int h, int frame, int total) {
-        float k = 0.85f + 0.15f * sinf(frame * 0.45f);
-        BlitImageBreathing(g_pet_eat, buf, w, h, k);
-    }});
-    // comfort：缓慢呼吸（常态图）
+    // comfort：缓慢呼吸（常态图，暂无对应 GIF）
     anim_->RegisterAction({"comfort", 30, 12, [](uint16_t* buf, int w, int h, int frame, int total) {
         float k = 0.8f + 0.2f * sinf(frame * 0.4f);
-        BlitImageBreathing(g_pet_idle, buf, w, h, k);
-    }});
-    // talk：说话/倾听时的轻微呼吸（常态图）。
-    // 作为 neutral 等未识别情绪的兜底动作，保证"每句话"都有可见反应，
-    // 而不是停在 1 帧静态图上显得没反应。幅度比 comfort 更小，避免晃眼。
-    anim_->RegisterAction({"talk", 20, 8, [](uint16_t* buf, int w, int h, int frame, int total) {
-        float k = 0.94f + 0.06f * sinf(frame * 0.5f);
         BlitImageBreathing(g_pet_idle, buf, w, h, k);
     }});
 
@@ -253,17 +221,38 @@ void PetDisplay::SetEmotion(const char* emotion) {
     } else if (e == "sad" || e == "cry" || e == "crying" || e == "unhappy") {
         action = "sad";
     } else if (e == "angry" || e == "mad") {
-        action = "comfort";  // 暂用 comfort 呼吸动作代替，后续可换真图
+        action = "angry";
     } else if (e == "surprise" || e == "surprised" || e == "shock") {
-        action = "blink";
+        action = "surprise";
     } else if (e == "think" || e == "thinking" || e == "confused") {
         action = "think";
     } else if (e == "blink" || e == "wink") {
         action = "blink";
     } else if (e == "eat" || e == "yum") {
         action = "eat";
-    } else if (e == "comfort" || e == "sleep" || e == "sleepy" ||
-               e == "shy" || e == "embarrassed") {
+    } else if (e == "drink" || e == "thirsty") {
+        action = "drink";
+    } else if (e == "sleep" || e == "sleepy") {
+        action = "sleep";
+    } else if (e == "cry" || e == "crying") {
+        action = "cry";
+    } else if (e == "laugh" || e == "laughing") {
+        action = "laugh";
+    } else if (e == "shy" || e == "embarrassed") {
+        action = "shy";
+    } else if (e == "fight" || e == "hit") {
+        action = "fight";
+    } else if (e == "headpat" || e == "pat") {
+        action = "headpat";
+    } else if (e == "bellyrub" || e == "tummy") {
+        action = "bellyrub";
+    } else if (e == "kiss" || e == "mua") {
+        action = "kiss";
+    } else if (e == "naughty" || e == "naughty") {
+        action = "naughty";
+    } else if (e == "walk" || e == "go") {
+        action = "walk";
+    } else if (e == "comfort" || e == "shy") {
         action = "comfort";
     } else if (e == "test_red") {
         action = "test_red";
